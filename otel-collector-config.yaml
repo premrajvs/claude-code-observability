@@ -1,0 +1,135 @@
+# Splunk OpenTelemetry Collector Configuration
+# For Claude Code Observatory
+#
+# This collector receives OTLP traces from the claude_observatory module
+# and forwards them to Splunk Enterprise via HEC
+
+receivers:
+  # OTLP receiver for traces from Python application
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "*"
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Batch processor - batches spans for better performance
+  batch:
+    timeout: 10s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  # Resource processor - adds common attributes to all spans
+  resource:
+    attributes:
+      - key: service.name
+        value: claude-code-observatory
+        action: insert
+      - key: deployment.environment
+        value: local
+        action: insert
+      - key: telemetry.sdk.name
+        value: opentelemetry
+        action: insert
+
+  # Memory limiter - prevents OOM issues
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Attributes processor - enriches spans with metadata
+  attributes:
+    actions:
+      # Promote OpenInference attributes for easier querying in Splunk
+      - key: otel.project
+        action: upsert
+        from_attribute: project.name
+      - key: otel.session_id
+        action: upsert
+        from_attribute: session.id
+      - key: otel.session_name
+        action: upsert
+        from_attribute: session.name
+      - key: otel.model
+        action: upsert
+        from_attribute: llm.model_name
+
+exporters:
+  # Splunk HEC exporter - sends to local Splunk instance
+  splunk_hec:
+    # Splunk HEC endpoint
+    endpoint: "http://localhost:8088/services/collector"
+
+    # HEC token for authentication
+    token: "6546f229-d56a-456e-b010-cde10a7a24b8"
+
+    # Splunk index for Claude Observatory data
+    index: "claude_observatory"
+
+    # Source and sourcetype for the data
+    source: "claude:observatory"
+    sourcetype: "otel:traces"
+
+    # Performance tuning
+    max_connections: 20
+    disable_compression: false
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+    # TLS settings (disable for local testing)
+    tls:
+      insecure_skip_verify: true
+
+  # Logging exporter - for debugging (optional)
+  logging:
+    loglevel: info
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # File exporter - backup to local files (optional)
+  # Useful for debugging or if Splunk is temporarily unavailable
+  file:
+    path: ./otel-traces.json
+    rotation:
+      max_megabytes: 100
+      max_days: 3
+      max_backups: 3
+
+extensions:
+  # Health check extension
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Performance profiler (optional)
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # Zpages for diagnostics (optional)
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource, attributes]
+      exporters: [splunk_hec, logging]
+      # Add 'file' exporter for backup: exporters: [splunk_hec, logging, file]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

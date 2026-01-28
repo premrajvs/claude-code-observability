@@ -1,0 +1,34 @@
+# Claude Code Observatory Configuration
+
+# OpenTelemetry / Splunk Configuration
+opentelemetry:
+  endpoint: "http://localhost:4318/v1/traces"
+
+splunk:
+  hec_token: "6546f229-d56a-456e-b010-cde10a7a24b8"
+  index: "claude_observatory"
+
+# Monitoring Settings
+monitoring:
+  watch_interval: 600
+  enable_hallucination_detection: true
+  enable_project_tracking: true
+
+# Claude Data Paths
+claude_paths:
+  data_dir: "~/.claude"
+  history_file: "~/.claude/history.jsonl"
+  projects_dir: "~/.claude/projects"
+  stats_file: "~/.claude/stats-cache.json"
+
+# Project Monitoring
+project_monitoring:
+  mode: "all"  # "all" or "specific"
+  specific_projects: []
+  exclude_projects: []
+
+# Logging
+logging:
+  level: "INFO"
+  file: "observatory.log"
+  console: true

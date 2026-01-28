@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m json.tool:*)",
+      "Bash(dir \"%USERPROFILE%\\\\.claude\\\\projects\" /b /s)",
+      "Bash(findstr:*)",
+      "Bash(dir \"C:\\\\Users\\\\premr\\\\.claude\\\\projects\\\\C--Users-premr-claude-code-observatory\" /b)",
+      "Bash(dir \"C:\\\\Users\\\\premr\\\\.claude\\\\projects\\\\C--Users-premr-claude-code-observatory\\\\*.jsonl\" /b)",
+      "Bash(dir /B C:Userspremrclaude-code-observatory)",
+      "Bash(git mv:*)",
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "Bash(dir:*)",
+      "Bash(find:*)"
+    ]
+  }
+}
