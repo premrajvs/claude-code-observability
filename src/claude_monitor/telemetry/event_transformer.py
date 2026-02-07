@@ -109,14 +109,17 @@ class OTelTransformer:
 
     def _parse_event(self, data: Dict[str, Any], session_id: str) -> ClaudeEvent:
         """Parse raw JSON data into ClaudeEvent."""
+        # Extract message object (if present)
+        message = data.get("message", {})
+
         # Determine event type
         event_type = self._determine_event_type(data)
 
         # Parse timestamp
         timestamp = self._parse_timestamp(data.get("timestamp"))
 
-        # Extract token usage
-        usage = data.get("usage", {})
+        # Extract token usage from message.usage (Claude Code JSONL structure)
+        usage = message.get("usage", {})
         tokens_input = usage.get("input_tokens", 0)
         tokens_output = usage.get("output_tokens", 0)
         tokens_cache_creation = usage.get("cache_creation_input_tokens", 0)
@@ -127,58 +130,90 @@ class OTelTransformer:
             tokens_input, tokens_output, tokens_cache_creation, tokens_cache_read
         )
 
-        # Extract tool information
+        # Extract model from message
+        model = message.get("model")
+
+        # Extract message ID from message
+        message_id = message.get("id", "")
+
+        # Extract request ID from root level
+        request_id = data.get("requestId")
+
+        # Extract project path and session slug from root level
+        project_path = data.get("cwd")
+        session_slug = data.get("slug")
+
+        # Extract tool information from message.content
         tool_name = None
         tool_input = None
         tool_result = None
         tool_error = None
 
-        if event_type == "tool_use":
-            tool_name = data.get("name")
-            tool_input = data.get("input")
-        elif event_type == "tool_result":
-            tool_result = data.get("content")
-            if isinstance(tool_result, list) and tool_result:
-                # Check for error in tool result
-                first_item = tool_result[0]
-                if isinstance(first_item, dict) and first_item.get("type") == "error":
-                    tool_error = first_item.get("error")
+        # Get content (can be string for user messages or array for assistant)
+        content_data = message.get("content")
 
-        # Extract content
+        # Extract tool info if content is an array
+        if isinstance(content_data, list):
+            for item in content_data:
+                if isinstance(item, dict):
+                    if item.get("type") == "tool_use":
+                        tool_name = item.get("name")
+                        tool_input = item.get("input")
+                    elif item.get("type") == "tool_result":
+                        tool_result = item.get("content")
+                        if isinstance(tool_result, list) and tool_result:
+                            first = tool_result[0]
+                            if isinstance(first, dict) and first.get("type") == "error":
+                                tool_error = first.get("error")
+
+        # Extract content text (handles both string and array formats)
         content = None
-        if "content" in data:
-            content = self._extract_content(data["content"])
+        if content_data:
+            content = self._extract_content(content_data)
 
         return ClaudeEvent(
             type=event_type,
             session_id=session_id,
             timestamp=timestamp,
-            message_id=data.get("id", ""),
-            request_id=data.get("request_id"),
+            message_id=message_id,
+            request_id=request_id,
             tokens_input=tokens_input,
             tokens_output=tokens_output,
             tokens_cache_creation=tokens_cache_creation,
             tokens_cache_read=tokens_cache_read,
             cost_usd=cost_usd,
-            model=data.get("model"),
+            model=model,
             tool_name=tool_name,
             tool_input=tool_input,
             tool_result=tool_result,
             tool_error=tool_error,
             content=content,
+            project_path=project_path,
+            session_slug=session_slug,
             raw_data=data,
         )
 
     def _determine_event_type(self, data: Dict[str, Any]) -> str:
         """Determine the type of event from raw data."""
+        # Check root level type first (Claude Code structure)
         if "type" in data:
-            return data["type"]
+            root_type = data["type"]
+            # Claude Code uses "user" and "assistant" at root level
+            if root_type in ("user", "assistant", "system"):
+                return root_type
 
-        # Infer from role
-        role = data.get("role", "")
+        # Check message.role (for message objects)
+        message = data.get("message", {})
+        role = message.get("role", "")
         if role == "user":
             return "user"
         elif role == "assistant":
+            # Check if it contains tool_use in content
+            content = message.get("content", [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        return "tool_use"
             return "assistant"
 
         return "unknown"
@@ -294,6 +329,55 @@ class OTelTransformer:
         # Tool attributes
         if event.tool_name:
             span.set_attribute("tool.name", event.tool_name)
+
+            # Store tool input as event if present (can be large)
+            if event.tool_input:
+                tool_input_str = json.dumps(event.tool_input) if isinstance(event.tool_input, dict) else str(event.tool_input)
+                span.add_event(
+                    name="tool.input",
+                    attributes={
+                        "tool.name": event.tool_name,
+                        "tool.input.full": tool_input_str,
+                    }
+                )
+
+            # Store tool result as event if present (can be large)
+            if event.tool_result:
+                tool_result_str = json.dumps(event.tool_result) if not isinstance(event.tool_result, str) else event.tool_result
+                span.add_event(
+                    name="tool.result",
+                    attributes={
+                        "tool.name": event.tool_name,
+                        "tool.result.full": tool_result_str,
+                    }
+                )
+
+        # Project and session metadata
+        if event.project_path:
+            span.set_attribute("project.path", event.project_path)
+        if event.session_slug:
+            span.set_attribute("session.slug", event.session_slug)
+
+        # Message content - Use span events for large content (no size limit)
+        # Store summary in attribute and full content in event
+        if event.content:
+            # Add a short preview as attribute for easy filtering
+            preview_length = 200
+            content_preview = event.content[:preview_length]
+            if len(event.content) > preview_length:
+                content_preview += "..."
+            span.set_attribute("message.content.preview", content_preview)
+            span.set_attribute("message.content.length", len(event.content))
+
+            # Store full content as span event (no truncation)
+            span.add_event(
+                name="message.content",
+                attributes={
+                    "content.full": event.content,
+                    "content.type": event.type,
+                    "content.length": len(event.content),
+                }
+            )
 
         # Set status based on errors
         if event.tool_error:

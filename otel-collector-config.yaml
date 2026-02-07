@@ -66,17 +66,16 @@ exporters:
     endpoint: "http://localhost:8088/services/collector"
 
     # HEC token for authentication
-    token: "6546f229-d56a-456e-b010-cde10a7a24b8"
+    token: "dd32038a-d0e4-4a34-a563-40c11c18e336"
 
     # Splunk index for Claude Observatory data
-    index: "claude_observatory"
+    index: "idx-claudecode"
 
     # Source and sourcetype for the data
     source: "claude:observatory"
     sourcetype: "otel:traces"
 
     # Performance tuning
-    max_connections: 20
     disable_compression: false
     timeout: 10s
     retry_on_failure:
@@ -89,9 +88,9 @@ exporters:
     tls:
       insecure_skip_verify: true
 
-  # Logging exporter - for debugging (optional)
-  logging:
-    loglevel: info
+  # Debug exporter - for debugging (optional)
+  debug:
+    verbosity: detailed
     sampling_initial: 5
     sampling_thereafter: 200
 
@@ -125,11 +124,24 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource, attributes]
-      exporters: [splunk_hec, logging]
-      # Add 'file' exporter for backup: exporters: [splunk_hec, logging, file]
+      exporters: [splunk_hec, debug]
+
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [splunk_hec, debug]
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [splunk_hec, debug]
 
   telemetry:
     logs:
-      level: info
-    metrics:
-      address: 0.0.0.0:8888
+      level: debug
+      output_paths:
+        - "C:\\Program Files\\OpenTelemetry Collector\\otelcol.log"
+      error_output_paths:
+        - "C:\\Program Files\\OpenTelemetry Collector\\otelcol-error.log"
