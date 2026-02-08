@@ -1,0 +1,107 @@
+# OpenTelemetry Collector Configuration for Claude Monitor
+# This collector receives telemetry from the Claude Monitor application
+# and exports it to Splunk HEC (with future support for Dynatrace)
+
+receivers:
+  # OTLP receiver for traces, metrics, and logs
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batch processor for efficiency
+  batch:
+    timeout: 10s
+    send_batch_size: 100
+    send_batch_max_size: 200
+
+  # Resource processor to add/modify resource attributes
+  resource:
+    attributes:
+      - key: service.name
+        value: claude-monitor
+        action: upsert
+      - key: deployment.environment
+        value: local
+        action: upsert
+
+  # Attributes processor for enrichment
+  attributes:
+    actions:
+      # Add hostname if not present
+      - key: host.name
+        action: upsert
+        from_attribute: host.name
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+exporters:
+  # Splunk HEC exporter
+  splunk_hec:
+    token: "8e4fb276-5ba0-4277-943d-cfa8a510f2a1"
+    endpoint: "http://localhost:8088/services/collector"
+    source: "claude-monitor"
+    sourcetype: "_json"
+    index: "main"
+    max_content_length_logs: 2097152
+    disable_compression: false
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Console exporter for debugging
+  logging:
+    loglevel: debug
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # OTLP exporter (for future Dynatrace migration)
+  # Uncomment when ready to switch to Dynatrace
+  # otlp/dynatrace:
+  #   endpoint: "https://{your-environment-id}.live.dynatrace.com/api/v2/otlp"
+  #   headers:
+  #     Authorization: "Api-Token YOUR_DYNATRACE_TOKEN"
+  #   compression: gzip
+
+service:
+  # Telemetry for the collector itself
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: localhost:8888
+
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource, attributes]
+      exporters: [splunk_hec, logging]
+      # To send to both Splunk and Dynatrace:
+      # exporters: [splunk_hec, otlp/dynatrace, logging]
+
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [splunk_hec, logging]
+      # To send to both Splunk and Dynatrace:
+      # exporters: [splunk_hec, otlp/dynatrace, logging]
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource, attributes]
+      exporters: [splunk_hec, logging]
+      # To send to both Splunk and Dynatrace:
+      # exporters: [splunk_hec, otlp/dynatrace, logging]
