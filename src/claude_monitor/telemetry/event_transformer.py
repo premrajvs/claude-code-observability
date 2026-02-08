@@ -1,5 +1,7 @@
 """
 Transform Claude Code JSONL events into OpenTelemetry signals.
+
+This module follows OpenTelemetry semantic conventions for LLM observability.
 """
 
 import json
@@ -15,6 +17,7 @@ from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 
 from claude_monitor.telemetry.models import ClaudeEvent
+from claude_monitor.telemetry import semantic_conventions as sc
 
 
 logger = logging.getLogger(__name__)
@@ -299,44 +302,47 @@ class OTelTransformer:
             start_time=int(event.timestamp.timestamp() * 1e9),  # nanoseconds
         )
 
-        # Set attributes
-        span.set_attribute("session.id", event.session_id)
-        span.set_attribute("message.id", event.message_id)
-        span.set_attribute("message.type", event.type)
+        # Set attributes using semantic conventions
+        # Session attributes
+        span.set_attribute(sc.SESSION_ID, event.session_id)
+        span.set_attribute(sc.MESSAGE_ID, event.message_id)
+        span.set_attribute(sc.MESSAGE_TYPE, event.type)
 
         if event.request_id:
-            span.set_attribute("request.id", event.request_id)
+            span.set_attribute(sc.LLM_REQUEST_ID, event.request_id)
 
+        # Model attributes (following gen_ai.* convention)
         if event.model:
-            span.set_attribute("model", event.model)
+            model_attrs = sc.get_model_attributes(event.model)
+            for key, value in model_attrs.items():
+                span.set_attribute(key, value)
 
-        # Token attributes
-        if event.tokens_input > 0:
-            span.set_attribute("tokens.input", event.tokens_input)
-        if event.tokens_output > 0:
-            span.set_attribute("tokens.output", event.tokens_output)
-        if event.tokens_cache_creation > 0:
-            span.set_attribute("tokens.cache_creation", event.tokens_cache_creation)
-        if event.tokens_cache_read > 0:
-            span.set_attribute("tokens.cache_read", event.tokens_cache_read)
-
-        span.set_attribute("tokens.total", event.total_tokens)
+        # Token attributes (following both custom and OpenInference conventions)
+        token_attrs = sc.get_token_attributes(
+            input_tokens=event.tokens_input,
+            output_tokens=event.tokens_output,
+            cache_creation_tokens=event.tokens_cache_creation,
+            cache_read_tokens=event.tokens_cache_read,
+        )
+        for key, value in token_attrs.items():
+            span.set_attribute(key, value)
 
         # Cost
         if event.cost_usd > 0:
-            span.set_attribute("cost.usd", event.cost_usd)
+            span.set_attribute(sc.COST_USD, event.cost_usd)
+            span.set_attribute(sc.COST_CURRENCY, "USD")
 
-        # Tool attributes
+        # Tool attributes (using semantic conventions)
         if event.tool_name:
-            span.set_attribute("tool.name", event.tool_name)
+            span.set_attribute(sc.TOOL_NAME, event.tool_name)
 
             # Store tool input as event if present (can be large)
             if event.tool_input:
                 tool_input_str = json.dumps(event.tool_input) if isinstance(event.tool_input, dict) else str(event.tool_input)
                 span.add_event(
-                    name="tool.input",
+                    name=sc.EVENT_TOOL_INPUT,
                     attributes={
-                        "tool.name": event.tool_name,
+                        sc.TOOL_NAME: event.tool_name,
                         "tool.input.full": tool_input_str,
                     }
                 )
@@ -345,18 +351,22 @@ class OTelTransformer:
             if event.tool_result:
                 tool_result_str = json.dumps(event.tool_result) if not isinstance(event.tool_result, str) else event.tool_result
                 span.add_event(
-                    name="tool.result",
+                    name=sc.EVENT_TOOL_RESULT,
                     attributes={
-                        "tool.name": event.tool_name,
+                        sc.TOOL_NAME: event.tool_name,
                         "tool.result.full": tool_result_str,
                     }
                 )
 
-        # Project and session metadata
-        if event.project_path:
-            span.set_attribute("project.path", event.project_path)
-        if event.session_slug:
-            span.set_attribute("session.slug", event.session_slug)
+        # Project and session metadata (using semantic conventions)
+        session_attrs = sc.get_session_attributes(
+            session_id=event.session_id,
+            project_path=event.project_path or "",
+            session_slug=event.session_slug or "",
+        )
+        for key, value in session_attrs.items():
+            if value:  # Only set if not empty
+                span.set_attribute(key, value)
 
         # Message content - Use span events for large content (no size limit)
         # Store summary in attribute and full content in event
@@ -366,12 +376,12 @@ class OTelTransformer:
             content_preview = event.content[:preview_length]
             if len(event.content) > preview_length:
                 content_preview += "..."
-            span.set_attribute("message.content.preview", content_preview)
-            span.set_attribute("message.content.length", len(event.content))
+            span.set_attribute(sc.MESSAGE_CONTENT_PREVIEW, content_preview)
+            span.set_attribute(sc.MESSAGE_CONTENT_LENGTH, len(event.content))
 
             # Store full content as span event (no truncation)
             span.add_event(
-                name="message.content",
+                name=sc.EVENT_MESSAGE_CONTENT,
                 attributes={
                     "content.full": event.content,
                     "content.type": event.type,
@@ -388,17 +398,15 @@ class OTelTransformer:
         return span
 
     def _get_span_name(self, event: ClaudeEvent) -> str:
-        """Generate span name from event."""
+        """
+        Generate span name following semantic conventions.
+
+        Uses standardized naming for better observability across platforms.
+        """
         if event.type == "tool_use" and event.tool_name:
-            return f"tool.{event.tool_name}"
-        elif event.type == "tool_result":
-            return "tool.result"
-        elif event.type == "user":
-            return "user.message"
-        elif event.type == "assistant":
-            return "assistant.response"
+            return sc.get_span_name_for_tool(event.tool_name)
         else:
-            return f"event.{event.type}"
+            return sc.get_span_name_for_message_type(event.type)
 
     def record_metrics(self, event: ClaudeEvent):
         """
